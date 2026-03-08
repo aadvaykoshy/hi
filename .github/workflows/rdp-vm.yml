@@ -84,11 +84,27 @@ jobs:
         shell: pwsh
         run: |
           $url = Get-Content 'C:\tunnel_url.txt' -Raw
+
+          # Fetch the LocalTunnel bypass password (public IP of this runner)
+          $tunnelPassword = $null
+          try {
+            $tunnelPassword = (Invoke-WebRequest -Uri 'https://loca.lt/mytunnelpassword' -UseBasicParsing).Content.Trim()
+          } catch {
+            Write-Host "Warning: Could not automatically fetch LocalTunnel bypass password. Visit https://loca.lt/mytunnelpassword manually from the runner to obtain it."
+          }
+
           Write-Host "================================"
           Write-Host "RDP VM is ONLINE"
           Write-Host "================================"
           Write-Host "Username: runneradmin"
           Write-Host "Password: P@ssw0rd123"
+          Write-Host ""
+          if ($tunnelPassword) {
+            Write-Host "LocalTunnel Bypass Password: $tunnelPassword"
+            Write-Host "(Enter this when the loca.lt page asks for a password)"
+          } else {
+            Write-Host "LocalTunnel Bypass Password: visit https://loca.lt/mytunnelpassword to obtain it"
+          }
           Write-Host ""
           if ($url -eq 'URL_NOT_FOUND') {
             Write-Host "WARNING: LocalTunnel URL could not be determined."
@@ -102,10 +118,7 @@ jobs:
             Write-Host "  Host:     $hostname"
             Write-Host "  Username: runneradmin"
             Write-Host "  Password: P@ssw0rd123"
-            Write-Host ""
-            Write-Host "NOTE: If prompted for a password by the loca.lt page, visit https://loca.lt/mytunnelpassword"
           }
-          Write-Host "NO CREDIT CARD REQUIRED!"
           Write-Host "================================"
 
       - name: Keep VM Running
