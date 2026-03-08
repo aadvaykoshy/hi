@@ -1,7 +1,12 @@
-name: Windows RDP VM with Serveo
+name: Windows RDP VM with LocalTunnel
 
 on:
   workflow_dispatch:
+    inputs:
+      duration:
+        description: 'Duration in minutes (default 360)'
+        required: false
+        default: '360'
 
 jobs:
   rdp-vm:
@@ -28,14 +33,29 @@ jobs:
           Invoke-WebRequest -Uri "https://dl.google.com/chrome/install/latest/chrome_installer.exe" -OutFile C:\chrome_installer.exe
           & C:\chrome_installer.exe /silent /install /system-level
 
-      - name: Start HTTP Server on RDP Port
+      - name: Install Node.js
         shell: pwsh
         run: |
-          # Forward RDP through simple TCP relay
-          Write-Host "RDP Server starting on 3389..."
-          Start-Sleep -Seconds 5
+          $ProgressPreference = 'SilentlyContinue'
+          Invoke-WebRequest -Uri "https://nodejs.org/dist/v18.19.0/node-v18.19.0-win-x64.msi" -OutFile C:\node-installer.msi
+          & msiexec.exe /i C:\node-installer.msi /quiet /norestart
 
-      - name: Keep VM Running
+      - name: Install LocalTunnel
+        shell: pwsh
+        run: |
+          npm install -g localtunnel
+
+      - name: Start LocalTunnel
+        shell: pwsh
+        run: |
+          Start-Process powershell -ArgumentList "-NoExit", "-Command", "lt --port 3389" -NoNewWindow
+
+      - name: Wait for Tunnel
+        shell: pwsh
+        run: |
+          Start-Sleep -Seconds 15
+
+      - name: Display Connection Info
         shell: pwsh
         run: |
           Write-Host "================================"
@@ -44,7 +64,20 @@ jobs:
           Write-Host "Username: runneradmin"
           Write-Host "Password: P@ssw0rd123"
           Write-Host ""
-          Write-Host "RDP enabled on port 3389"
-          Write-Host "VM will stay online for 360 minutes"
+          Write-Host "LocalTunnel Active!"
+          Write-Host "Check the logs above for your tunnel URL"
+          Write-Host "It will look like: https://xyz123.loca.lt"
+          Write-Host ""
+          Write-Host "To connect:"
+          Write-Host "1. Use the tunnel URL in Remote Desktop"
+          Write-Host "2. Or connect to localhost:3389 if on same network"
+          Write-Host ""
+          Write-Host "NO CREDIT CARD REQUIRED!"
           Write-Host "================================"
-          Start-Sleep -Seconds (360 * 60)
+
+      - name: Keep VM Running
+        shell: pwsh
+        run: |
+          $duration = ${{ inputs.duration || 360 }}
+          Write-Host "VM running for $duration minutes..."
+          Start-Sleep -Seconds ($duration * 60)
