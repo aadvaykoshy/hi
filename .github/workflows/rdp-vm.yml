@@ -1,4 +1,4 @@
-name: Windows RDP VM with LocalTunnel
+name: Browser VNC (noVNC)
 
 on:
   workflow_dispatch:
@@ -9,29 +9,45 @@ on:
         default: '360'
 
 jobs:
-  rdp-vm:
-    runs-on: windows-latest
+  vnc:
+    runs-on: ubuntu-latest
     timeout-minutes: 360
+    permissions:
+      contents: read
 
     steps:
-      - name: Enable RDP
-        shell: pwsh
+      - name: Install desktop environment and VNC tools
         run: |
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name 'fDenyTSConnections' -Value 0 -Force
-          Enable-NetFirewallRule -DisplayGroup 'Remote Desktop' -ErrorAction SilentlyContinue
+          sudo apt-get update -qq
+          sudo apt-get install -y xfce4 xfce4-goodies x11vnc xvfb novnc websockify
 
-      - name: Set RDP Password
-        shell: pwsh
+      - name: Start virtual display (Xvfb)
         run: |
-          $password = ConvertTo-SecureString "P@ssw0rd123" -AsPlainText -Force
-          Get-LocalUser -Name "runneradmin" | Set-LocalUser -Password $password
+          Xvfb :1 -screen 0 1280x800x24 &
+          echo "DISPLAY=:1" >> $GITHUB_ENV
+          sleep 2
 
-      - name: Install Chrome
-        shell: pwsh
+      - name: Start XFCE4 desktop
         run: |
-          $ProgressPreference = 'SilentlyContinue'
-          Invoke-WebRequest -Uri "https://dl.google.com/chrome/install/latest/chrome_installer.exe" -OutFile C:\chrome_installer.exe
-          & C:\chrome_installer.exe /silent /install /system-level
+          DISPLAY=:1 startxfce4 &
+          sleep 3
+
+      - name: Set VNC password
+        run: |
+          mkdir -p ~/.vnc
+          VNC_PASS=$(openssl rand -base64 12)
+          echo "VNC_PASS=$VNC_PASS" >> $GITHUB_ENV
+          x11vnc -storepasswd "$VNC_PASS" ~/.vnc/passwd
+
+      - name: Start x11vnc server
+        run: |
+          x11vnc -display :1 -rfbport 5901 -rfbauth ~/.vnc/passwd -forever -shared -bg -o /tmp/x11vnc.log
+          sleep 2
+
+      - name: Start noVNC (websockify)
+        run: |
+          websockify --web /usr/share/novnc/ 6080 localhost:5901 &
+          sleep 2
 
       - name: Setup Node.js
         uses: actions/setup-node@v3
@@ -39,91 +55,48 @@ jobs:
           node-version: '18'
 
       - name: Install LocalTunnel
-        shell: pwsh
+        run: npm install -g localtunnel
+
+      - name: Start LocalTunnel and capture URL
         run: |
-          npm install -g localtunnel
+          lt --port 6080 > /tmp/tunnel_output.txt 2>&1 &
+          # Wait up to 30 seconds for the tunnel URL
+          URL=""
+          for i in $(seq 1 15); do
+            sleep 2
+            URL=$(grep -oP 'https://[a-zA-Z0-9\-]+\.loca\.lt' /tmp/tunnel_output.txt | head -1)
+            if [ -n "$URL" ]; then break; fi
+          done
+          if [ -n "$URL" ]; then
+            echo "TUNNEL_URL=$URL" >> $GITHUB_ENV
+          else
+            echo "TUNNEL_URL=URL_NOT_FOUND" >> $GITHUB_ENV
+            echo "Warning: could not capture tunnel URL. Raw output:"
+            cat /tmp/tunnel_output.txt
+          fi
 
-      - name: Start LocalTunnel and Capture URL
-        shell: pwsh
+      - name: Display connection info
         run: |
-          # Start lt in a background job so we can read its output (which contains the tunnel URL)
-          $job = Start-Job -ScriptBlock {
-            $env:PATH = $env:PATH + ";C:\Users\runneradmin\AppData\Roaming\npm;C:\Program Files\nodejs"
-            & lt --port 3389 2>&1
-          }
+          TUNNEL_PASSWORD=$(curl -s https://loca.lt/mytunnelpassword || echo "Failed to fetch automatically – visit https://loca.lt/mytunnelpassword from the runner to retrieve it")
+          echo "================================"
+          echo "Browser VNC is ONLINE"
+          echo "================================"
+          if [ "$TUNNEL_URL" = "URL_NOT_FOUND" ]; then
+            echo "WARNING: LocalTunnel URL could not be determined."
+            echo "Check the 'Start LocalTunnel and capture URL' step output above."
+          else
+            echo "Open this URL in your browser:"
+            echo "  $TUNNEL_URL/vnc.html"
+            echo ""
+            echo "VNC Password: $VNC_PASS"
+            echo ""
+            echo "LocalTunnel Bypass Password: $TUNNEL_PASSWORD"
+            echo "(Enter this when the loca.lt page asks for a password)"
+          fi
+          echo "================================"
 
-          # Wait up to 30 seconds for the tunnel URL to appear in job output
-          $url = $null
-          $timeout = 30
-          $elapsed = 0
-          while ($elapsed -lt $timeout) {
-            Start-Sleep -Seconds 2
-            $elapsed += 2
-            $output = Receive-Job -Job $job -Keep
-            foreach ($line in $output) {
-              if ($line -match 'https://[a-zA-Z0-9\-]+\.loca\.lt') {
-                $url = $Matches[0]
-                break
-              }
-            }
-            if ($url) { break }
-          }
-
-          if ($url) {
-            Write-Host "Tunnel URL captured: $url"
-            $url | Out-File 'C:\tunnel_url.txt' -NoNewline -Encoding UTF8
-          } else {
-            Write-Host "Warning: Could not capture tunnel URL within $timeout seconds"
-            Write-Host "Job output so far:"
-            Receive-Job -Job $job -Keep | ForEach-Object { Write-Host $_ }
-            # Write a placeholder so subsequent steps don't fail
-            "URL_NOT_FOUND" | Out-File 'C:\tunnel_url.txt' -NoNewline -Encoding UTF8
-          }
-
-      - name: Display Connection Info
-        shell: pwsh
+      - name: Keep VM running
         run: |
-          $url = Get-Content 'C:\tunnel_url.txt' -Raw
-
-          # Fetch the LocalTunnel bypass password (public IP of this runner)
-          $tunnelPassword = $null
-          try {
-            $tunnelPassword = (Invoke-WebRequest -Uri 'https://loca.lt/mytunnelpassword' -UseBasicParsing).Content.Trim()
-          } catch {
-            Write-Host "Warning: Could not automatically fetch LocalTunnel bypass password. Visit https://loca.lt/mytunnelpassword manually from the runner to obtain it."
-          }
-
-          Write-Host "================================"
-          Write-Host "RDP VM is ONLINE"
-          Write-Host "================================"
-          Write-Host "Username: runneradmin"
-          Write-Host "Password: P@ssw0rd123"
-          Write-Host ""
-          if ($tunnelPassword) {
-            Write-Host "LocalTunnel Bypass Password: $tunnelPassword"
-            Write-Host "(Enter this when the loca.lt page asks for a password)"
-          } else {
-            Write-Host "LocalTunnel Bypass Password: visit https://loca.lt/mytunnelpassword to obtain it"
-          }
-          Write-Host ""
-          if ($url -eq 'URL_NOT_FOUND') {
-            Write-Host "WARNING: LocalTunnel URL could not be determined."
-            Write-Host "Check the 'Start LocalTunnel and Capture URL' step output above for the tunnel URL."
-          } else {
-            $hostname = $url -replace 'https://', ''
-            Write-Host "LocalTunnel Active!"
-            Write-Host "Tunnel URL: $url"
-            Write-Host ""
-            Write-Host "To connect via Remote Desktop:"
-            Write-Host "  Host:     $hostname"
-            Write-Host "  Username: runneradmin"
-            Write-Host "  Password: P@ssw0rd123"
-          }
-          Write-Host "================================"
-
-      - name: Keep VM Running
-        shell: pwsh
-        run: |
-          $duration = ${{ inputs.duration || 360 }}
-          Write-Host "VM running for $duration minutes..."
-          Start-Sleep -Seconds ($duration * 60)
+          duration=${{ inputs.duration || 360 }}
+          echo "VM running for $duration minutes..."
+          sleep $((duration * 60))
