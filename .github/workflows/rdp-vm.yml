@@ -43,34 +43,68 @@ jobs:
         run: |
           npm install -g localtunnel
 
-      - name: Start LocalTunnel
+      - name: Start LocalTunnel and Capture URL
         shell: pwsh
         run: |
-          Start-Process powershell -ArgumentList "-NoExit", "-Command", "lt --port 3389" -NoNewWindow
+          # Start lt in a background job so we can read its output (which contains the tunnel URL)
+          $job = Start-Job -ScriptBlock {
+            $env:PATH = $env:PATH + ";C:\Users\runneradmin\AppData\Roaming\npm;C:\Program Files\nodejs"
+            & lt --port 3389 2>&1
+          }
 
-      - name: Wait for Tunnel
-        shell: pwsh
-        run: |
-          Start-Sleep -Seconds 15
+          # Wait up to 30 seconds for the tunnel URL to appear in job output
+          $url = $null
+          $timeout = 30
+          $elapsed = 0
+          while ($elapsed -lt $timeout) {
+            Start-Sleep -Seconds 2
+            $elapsed += 2
+            $output = Receive-Job -Job $job -Keep
+            foreach ($line in $output) {
+              if ($line -match 'https://[a-zA-Z0-9\-]+\.loca\.lt') {
+                $url = $Matches[0]
+                break
+              }
+            }
+            if ($url) { break }
+          }
+
+          if ($url) {
+            Write-Host "Tunnel URL captured: $url"
+            $url | Out-File 'C:\tunnel_url.txt' -NoNewline -Encoding UTF8
+          } else {
+            Write-Host "Warning: Could not capture tunnel URL within $timeout seconds"
+            Write-Host "Job output so far:"
+            Receive-Job -Job $job -Keep | ForEach-Object { Write-Host $_ }
+            # Write a placeholder so subsequent steps don't fail
+            "URL_NOT_FOUND" | Out-File 'C:\tunnel_url.txt' -NoNewline -Encoding UTF8
+          }
 
       - name: Display Connection Info
         shell: pwsh
         run: |
+          $url = Get-Content 'C:\tunnel_url.txt' -Raw
           Write-Host "================================"
           Write-Host "RDP VM is ONLINE"
           Write-Host "================================"
           Write-Host "Username: runneradmin"
           Write-Host "Password: P@ssw0rd123"
           Write-Host ""
-          Write-Host "LocalTunnel Active!"
-          Write-Host "Check the workflow logs for your tunnel URL"
-          Write-Host "It will look like: https://xyz123.loca.lt"
-          Write-Host ""
-          Write-Host "To connect in Remote Desktop:"
-          Write-Host "Host: xyz123.loca.lt:3389"
-          Write-Host "Username: runneradmin"
-          Write-Host "Password: P@ssw0rd123"
-          Write-Host ""
+          if ($url -eq 'URL_NOT_FOUND') {
+            Write-Host "WARNING: LocalTunnel URL could not be determined."
+            Write-Host "Check the 'Start LocalTunnel and Capture URL' step output above for the tunnel URL."
+          } else {
+            $hostname = $url -replace 'https://', ''
+            Write-Host "LocalTunnel Active!"
+            Write-Host "Tunnel URL: $url"
+            Write-Host ""
+            Write-Host "To connect via Remote Desktop:"
+            Write-Host "  Host:     $hostname"
+            Write-Host "  Username: runneradmin"
+            Write-Host "  Password: P@ssw0rd123"
+            Write-Host ""
+            Write-Host "NOTE: If prompted for a password by the loca.lt page, visit https://loca.lt/mytunnelpassword"
+          }
           Write-Host "NO CREDIT CARD REQUIRED!"
           Write-Host "================================"
 
